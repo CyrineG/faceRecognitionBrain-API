@@ -2,66 +2,77 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const bcrypt = require('bcrypt-nodejs');
 const cors= require('cors');
+const knex = require('knex');
+
+
+const db = knex({
+  client: 'pg',
+  connection: {
+    host : '127.0.0.1',
+    user : 'postgres',
+    password : 'root',
+    database : 'facerecognition'
+  }
+});
+
+db.select('*').from('users').then(data => {
+	console.log(data);
+} );
+
 const app = express();
 
 app.use(bodyParser.json());
 app.use(cors());
-const database = {
-	users: [
-	{
-		id: '123',
-		name:'john',
-		email: 'john@gmail.com',
-		password: 'cookies',
-		entries: 0, //number of photoes submitted
-		joined: new Date() //date joined, direct ib new Date we et the current dat when it's executed.
-	},
-	{
-		id: '124',
-		name:'sally',
-		password: 'bananas',
-		email: 'sally@gmail.com',
-		entries: 0, //number of photoes submitted
-		joined: new Date() //date joined, direct ib new Date we et the current dat when it's executed.
-		
-	}
-	],
-	login: [
-	{
-		id: '987',
-		hash: '',
-		email: 'john@gmail.com'
-	}
-	]
-
-};
 
 app.post('/signin', (req, res) => {
-	if(req.body.email === database.users[0].email && req.body.password === database.users[0].password){
-		res.json(database.users[0]);
-	} else {
-		res.status(400).json('error logging in');
-	}
+	db.select('email', 'hash').from('login')
+	  .where('email','=', req.body.email)
+	  .then(data => {
+	  	console.log(data);
+	  	const isValid = bcrypt.compareSync(req.body.password, data[0].hash);
+	  	if (isValid){
+	  		return db.select('*').from('users')
+	  		  .where('email','=', data[0].email)
+	  		  .then(user => {
+	  		  	res.json(user[0])
+	  		  })	
+	  		  .catch(err => res.status(400).json('unable to get user'))
+	  	} else {
+	  		res.status(400).json('wrong credentials');
+	  	}
+	  })
 })
 
 app.post('/register', (req, res)=> {
 	const {email, name, password } = req.body;
-	bcrypt.hash(password, null, null, function(err, hash) {
-    console.log(hash);
-});
-	database.users.push({
-		id: '125',
-		name: name,
-		email: email,
-		entries: 0, //number of photoes submitted
-		joined: new Date()
-	});
-	/**database.login.push({
-		id: '145',
-		hash: hash,
-		email: email
-	})**/
-	res.json(database.users[database.users.length -1]);
+	const hash = bcrypt.hashSync(password);
+	db.transaction(trx => { 
+
+		trx.insert({
+
+			hash: hash,
+			email: email
+
+		}).into('login').returning('email')
+		.then (loginEmail => {
+
+			return trx('users')
+			.returning('*')
+			.insert({
+				name: name,
+				email: loginEmail[0],
+				joined: new Date()
+			})
+			.then(user => {
+			res.json(user[0]);
+			})
+
+		})
+		.then(trx.commit)
+		.catch(trx.rollback);
+		
+	})
+	.catch(err => res.status(400).json('unable to register'));
 })
 
 app.get('/', (req, res)=> {
@@ -72,31 +83,26 @@ app.get('/profile/:id', (req, res) => {
 	const {id} = req.params;
 	let found = false;
 	//find user with matching id
-	database.users.forEach(user => {
-		if (user.id === id) {
-			found = true;
+	db.select('*').from('users').whre({id})
+	.then(user => {
+		if(user.length) {
 			return res.json(user);
+		}else {
+			res.status(400).json('not found');
 		}
 	})
-	if (!found) {
-		res.status(404).json('no such user');
-	}
+	
 })
 
 app.put('/image', (req, res) => {
 	const {id} = req.body; //we get the user id from the body
-	let found = false;
 	//find user with matching id
-	database.users.forEach(user => {
-		if (user.id === id) {
-			found = true;
-			user.entries++;
-			return res.json(user.entries);
-		}
-	})
-	if (!found) {
-		res.status(404).json('no such user');
-	}
+	db('users').where('id', '=', id)
+	.increment('entries', 1)
+	.returning('entries')
+	.then(entries => {
+		res.json(entries[0]);
+	}).catch(err => res.status(400).json('unable to get entries'))
 })
 
 
